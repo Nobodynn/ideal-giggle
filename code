@@ -1,0 +1,563 @@
+
+input string   ___MovingAgerages___="___Parameter einstellen___";
+input int      MAkurz_Periode=14,MAkurz_Versatz=0;
+input ENUM_MA_METHOD MAkurz_Methode=0;
+input ENUM_APPLIED_PRICE MAkurz_Preis=0;
+input int      MAlang_Periode=38,MAlang_Versatz=0;
+input ENUM_MA_METHOD MAlang_Methode=0;
+input ENUM_APPLIED_PRICE MAlang_Preis=0;
+input ENUM_TIMEFRAMES MA_Timeframe=0;
+input bool     Signalumkehr=false;
+input bool     SignalInnerhalbKerzeHandeln=false;
+input int      MaxSignaleProKerze=1;
+
+input string   ___Handelszeit___="___Parameter einstellen___";
+input bool     Handelszeit_verwenden = false;               
+input int      Handelsstart_Stunde = 7,
+               Handelsstart_Minute = 30,
+               Handelsende_Stunde = 18,
+               Handelsende_Minute = 30;
+input bool     DealsSchliessen_verwenden=false;
+input int      DealsSchliessen_Stunde = 21,
+               DealsSchliessen_Minute = 55;
+
+input string   ___Benachrichtigungsmanagement___="___Parameter einstellen___";
+input bool     EmailAlert=false;
+input bool     PopUpAlert=false;
+input string   AudioAlarm=NULL;
+input bool     Pushbenachrichtigung=true;
+input bool     PfeileZeichnen=true;
+input int      PfeilBreite=1;
+input color    FarbeLongsignal=clrChartreuse;
+input color    FarbeShortsignal=clrFireBrick;
+
+input string   ___Moneymanagement___="___Parameter einstellen___";
+enum MM_MODE { KeinTrading=-1,FixeLots=0,EquityLots=1,BalanceLots=2,KtoWhrgLots=3 };
+extern MM_MODE  Lotsizeermittlung=0;
+input double   FixeLotsize=0.1;
+input double   DealEinsatzInPrzntEquity=0.1;
+input double   DealEinsatzInPrzntBalance=0.1;
+input double   DealEinsatzInKtoWhrng=10;
+
+input string   ___Dealmanagement___="___Parameter einstellen___";
+input double   TP=0,//0=aus
+               SL=0;//0=aus
+input bool     TrailingStopp_verwenden=false;
+input double   TrailingStopp_AktivProfit=20,
+               TrailingStopp=20; 
+               
+input bool     BreakEven_verwenden=true;
+input double   BreakEven_Trigger=30;
+input double   BreakEven_Profit=0; 
+input double   BreakEven_Teilverkauf=50; //Prozentsatz der Lotsize, die teilgeschlossen werden soll
+
+input bool     Close_bei_Gegensignal=true;
+input int      Max_offeneBuys=1;
+input int      Max_offeneSells=1;
+input int      Max_offeneDeals=1;
+input string   DealKommentar="MAXingPro";
+input double   Maximale_Slippage=10,Maximaler_Spread=10;
+input int      MagicNumber=1711062312; 
+
+
+//------------------
+//Global Variables = variables that are used by several/all functions to come
+bool     NewBar,EAAllowed,LongGehandelt,ShortGehandelt,NoLong,NoShort,
+         LongClose,ShortClose,LongSignal,ShortSignal;
+datetime CurrentTimeStamp;   
+int      UseLotsizeermittlung,UseSlippage,UseSpread,UseTP,UseSL,UseTS,UseAktivTS,UseBEprofit,UseBEtrigger,Order,LotsRundung,DealCount,LongCount,ShortCount;
+double   UseLots;
+int      million=1000000;
+    
+
+//----------------
+//init function (run one time only upon starting the program)
+int init()
+   {
+      int PunkteProPips=10;
+      if(Digits==4||Digits==0) PunkteProPips=1;
+      if(Digits==2) PunkteProPips=100;
+      
+      UseSlippage=NormalizeDouble(Maximale_Slippage*PunkteProPips,0);
+      UseSpread=NormalizeDouble(Maximaler_Spread*PunkteProPips,0);
+      UseSL=NormalizeDouble(SL*PunkteProPips,0);
+      UseTP=NormalizeDouble(TP*PunkteProPips,0);
+      UseTS=NormalizeDouble(TrailingStopp*PunkteProPips,0);
+      UseAktivTS=NormalizeDouble(TrailingStopp_AktivProfit*PunkteProPips,0);
+      UseBEprofit=NormalizeDouble(BreakEven_Profit*PunkteProPips,0);
+      UseBEtrigger=NormalizeDouble(BreakEven_Trigger*PunkteProPips,0);
+      
+      if(MarketInfo(Symbol(),MODE_LOTSTEP)==0.01) LotsRundung = 2;
+      else if (MarketInfo(Symbol(),MODE_LOTSTEP)==0.1) LotsRundung = 1;
+      else LotsRundung = 0; 
+      
+      CurrentTimeStamp = iTime(Symbol(),MA_Timeframe,0);
+      
+      EAAllowed=true;
+      Comment("EA gestartet");
+      
+      if(Lotsizeermittlung>0&&SL<=0)
+         {
+            string message="Bei Lotsizeermittlung 'AutoLots' muss SL > 0 eingestellt werden.";
+            Alert(message);Print(message);Comment(message);
+            EAAllowed=false;
+            ExpertRemove();
+         }
+      return(0);
+            
+   }   
+
+
+//----------------
+//Main Program (run every time a new tick is produced)
+
+
+int start()
+   {   
+           
+      //Basic Settings End EA
+      UseLotsizeermittlung=Lotsizeermittlung;
+      if((EAAllowed==false||!IsExpertEnabled()||!IsTradeAllowed())&&Lotsizeermittlung>=0)
+         {
+            Comment("EA durch AutoTrading-Button oder LiveTradingZulassen-Einstellung deaktiviert");
+            UseLotsizeermittlung=-1;
+         }  
+      if(UseLotsizeermittlung<0) Comment("EA aktiv im nur-Signal Modus (KeinTrading)");
+      else Comment("EA aktiv");
+      
+      //Neuen Bar erkennen
+      if(CurrentTimeStamp != iTime(Symbol(),MA_Timeframe,0))
+         {
+            CurrentTimeStamp = iTime(Symbol(),MA_Timeframe,0);
+            NewBar = true;
+         }
+      else NewBar = false;
+      
+      DealCounter();
+      
+      //Handelszeit pruefen
+      bool TradingTime=true;
+      if(Handelszeit_verwenden) 
+         {
+            if( ((Hour()>Handelsstart_Stunde || (Hour()==Handelsstart_Stunde&&Minute()>=Handelsstart_Minute) ) &&
+               (Hour()<Handelsende_Stunde || (Hour()==Handelsende_Stunde&&Minute()<=Handelsende_Minute) ))
+               )
+               {
+                  TradingTime = true;
+               }
+            else TradingTime = false; 
+         } 
+      //Close bei DealsSchliessen_Zeit
+      if(DealsSchliessen_verwenden)
+         {
+            if(Hour()>DealsSchliessen_Stunde || (Hour()==DealsSchliessen_Stunde&&Minute()>=DealsSchliessen_Minute))
+               {
+                  if(LongCount>0){LongClose=true;Print("Closing Buys wegen DealsSchliessen_verwenden");}
+                  if(ShortCount>0){ShortClose=true;Print("Closing Sells wegen DealsSchliessen_verwenden");}
+                  TradingTime=false;
+               }
+         }
+      
+            
+      //Handelssignale
+      if(NewBar||SignalInnerhalbKerzeHandeln)
+         {
+            static int Richtung=0;
+            static int SigCount=0;
+            if(NewBar)SigCount=0;
+            int barshift=1;
+            if(SignalInnerhalbKerzeHandeln)barshift=0;
+            double MAkurz=iMA(NULL,MA_Timeframe,MAkurz_Periode,MAkurz_Versatz,MAkurz_Methode,MAkurz_Preis,barshift);
+            double MAlang=iMA(NULL,MA_Timeframe,MAlang_Periode,MAlang_Versatz,MAlang_Methode,MAlang_Preis,barshift);
+            //Signalzähler
+            if(SigCount<MaxSignaleProKerze||MaxSignaleProKerze<=0)
+               {
+               //Long und Short Signale
+               if((MAkurz<MAlang&&Richtung>0&&!Signalumkehr)||(MAkurz>MAlang&&Richtung<0&&Signalumkehr))
+                  {
+                  LongSignal=false;
+                  SigCount++;
+                  if(ShortCount<Max_offeneSells)ShortSignal=true;
+                  if(Close_bei_Gegensignal&&LongCount>0) LongClose=true;
+                  }
+               if((MAkurz>MAlang&&Richtung<0&&!Signalumkehr)||(MAkurz<MAlang&&Richtung>0&&Signalumkehr))
+                  {
+                  ShortSignal=false;
+                  SigCount++;
+                  if(LongCount<Max_offeneBuys)LongSignal=true;
+                  if(Close_bei_Gegensignal&&ShortCount>0) ShortClose=true;
+                  }
+               //Position MAkurz vs MAlang
+               if(MAkurz<MAlang)Richtung=-1;
+               if(MAkurz>MAlang)Richtung=1;
+               }
+         }
+         
+      //Close Deals
+      if(DealCount>0&&(LongClose||ShortClose))
+         {
+            if(LongCount>0&&LongClose)
+               {
+                  for(int Count = 0; Count<=OrdersTotal()-1 ; Count++)
+                     {
+                        if(OrderSelect(Count,SELECT_BY_POS,MODE_TRADES))
+                           {
+                              if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber && OrderType()==OP_BUY )
+                                 {
+                                    while(IsTradeContextBusy()) Sleep(10);
+                                    bool co=OrderClose(OrderTicket(),OrderLots(),Bid,UseSlippage,Blue);
+                                    if(co) 
+                                       {
+                                          LongCount--;DealCount--;
+                                          Count--;
+                                       }
+                                 }  
+                           }
+                     }
+               }
+            if(ShortCount>0&&ShortClose)
+               {
+                  for(Count = 0; Count<=OrdersTotal()-1 ; Count++)
+                     {
+                        if(OrderSelect(Count,SELECT_BY_POS,MODE_TRADES))
+                           {
+                              if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber && OrderType()==OP_SELL )
+                                 {
+                                    while(IsTradeContextBusy()) Sleep(10);
+                                    co=OrderClose(OrderTicket(),OrderLots(),Ask,UseSlippage,Blue);
+                                    if(co) 
+                                       {
+                                          ShortCount--;DealCount--;
+                                          Count--;
+                                       }
+                                 }  
+                           }
+                     }
+               }
+         }
+      if(LongCount==0) LongClose=false;
+      if(ShortCount==0) ShortClose=false;
+      
+      
+      
+      //Neue Deals
+      if(LongSignal&&!TradingTime){LongSignal=false;Print("LongSignal gelöscht, da ausserhalb Tradingzeit generiert");}
+      if(ShortSignal&&!TradingTime){ShortSignal=false;Print("ShortSignal gelöscht, da ausserhalb Tradingzeit generiert");}
+      if(LongSignal||ShortSignal)
+         {
+            if(!AlertAusgegeben)messageCentral(LongSignal,ShortSignal);
+            DealCounter();
+            if(DealCount>=Max_offeneDeals&&UseLotsizeermittlung>=0)
+               {
+                  string messageend="kann wird gelöscht wegen Max_offeneDeals.";
+                  if(LongSignal){Print("LongSignal "+messageend);LongSignal=false;}
+                  if(ShortSignal){Print("ShortSignal "+messageend);ShortSignal=false;}
+               }
+         }
+      if(MarketInfo(Symbol(),MODE_SPREAD)>UseSpread&&(LongSignal||ShortSignal))
+         {
+            messageend="kann noch nicht ausgeführt werden, da Spread zu hoch. Nächster Versuch bei nächstem Symbol-Tick.";
+            if(LongSignal)Print("LongSignal "+messageend);
+            if(ShortSignal)Print("ShortSignal "+messageend);
+         }
+      else if(LongSignal||ShortSignal)
+         {
+            //Lotsize ermitteln
+            if(UseLotsizeermittlung<0)UseLots=0;
+            else if(UseLotsizeermittlung==FixeLots)UseLots=NormalizeDouble(FixeLotsize,LotsRundung);
+            else
+               {
+                  double EquityAtRisk=AccountEquity()*DealEinsatzInPrzntEquity/100;
+                  if(UseLotsizeermittlung==BalanceLots)EquityAtRisk=AccountBalance()*DealEinsatzInPrzntBalance/100;
+                  if(UseLotsizeermittlung==KtoWhrgLots)EquityAtRisk=DealEinsatzInKtoWhrng;
+                  double PunkteAtRisk=UseSL;
+                  double MoneyAtRiskProLot=0;
+                  if(MarketInfo(Symbol(),MODE_TICKSIZE)>0) MoneyAtRiskProLot=PunkteAtRisk*MarketInfo(Symbol(),MODE_TICKVALUE)/(MarketInfo(Symbol(),MODE_TICKSIZE)/Point());
+                  if (MoneyAtRiskProLot>0) UseLots=NormalizeDouble(EquityAtRisk/MoneyAtRiskProLot,LotsRundung);
+                  else 
+                     {
+                        Print("Lotsize Long konnte nicht ermittelt werden, Long-Signal wurde ignoriert.");
+                        LongSignal=false;ShortSignal=false;
+                        return(0);
+                     }
+               }
+            Print("ermittelte Lotsize: ",DoubleToStr(UseLots,LotsRundung));
+            // Lotsize prüfen
+            if(UseLots<MarketInfo(Symbol(),MODE_MINLOT)&&UseLotsizeermittlung>=0)
+               {
+                  Print("Lotsize (",UseLots,") wurde auf Broker-Mindestlots ",MarketInfo(Symbol(),MODE_MINLOT)," angehoben");
+                  UseLots=MarketInfo(Symbol(),MODE_MINLOT);
+               }
+            else if(UseLots>MarketInfo(Symbol(),MODE_MAXLOT)&&UseLotsizeermittlung>=0)
+               {
+                  Print("Lotsize (",UseLots,") wurde auf Broker-Maximallots ",MarketInfo(Symbol(),MODE_MAXLOT)," abgesenkt");
+                  UseLots=MarketInfo(Symbol(),MODE_MAXLOT);
+               }
+            //Equity/Margin Needed Abfrage
+            double MarginNeeded=MarketInfo(Symbol(),MODE_MARGINREQUIRED)*UseLots;
+            if(MarginNeeded>AccountFreeMargin()&&UseLotsizeermittlung>=0)
+               {
+                  LongSignal=false;
+                  ShortSignal=false;
+                  Print("Benoetigte Margin ueberschreitet freie Margin, Signal gelöscht.");
+               }
+            //long
+            if(LongSignal&&UseLots>0)
+               {
+                  while(IsTradeContextBusy()) Sleep(10);
+                  Order = OrderSend(Symbol(),OP_BUY,UseLots,Ask,UseSlippage,0,0,DealKommentar,MagicNumber,0,clrGreen);
+                  if(Order>0) 
+                     {
+                        LongSignal=false;
+                        AlertAusgegeben=false;
+                        DealCount++;LongCount++;
+                     }
+                  else Print("Fehler bei Buy-Eröffnungsversuch: #",GetLastError());
+               }
+            else LongSignal=false;
+            //short
+            if(ShortSignal&&UseLots>0)
+               {
+                  while(IsTradeContextBusy()) Sleep(10);
+                  Order = OrderSend(Symbol(),OP_SELL,UseLots,Bid,UseSlippage,0,0,DealKommentar,MagicNumber,0,clrRed);
+                  if(Order>0) 
+                     {
+                        ShortSignal=false;
+                        AlertAusgegeben=false;
+                        DealCount++;ShortCount++;
+                     }
+                  else Print("Fehler bei Sell-Eröffnungsversuch: #",GetLastError());
+               }
+            else ShortSignal=false;
+            //---
+            if(UseLotsizeermittlung<0){LongSignal=false;ShortSignal=false;AlertAusgegeben=false;}
+         } 
+         
+      //SL
+      if(DealCount>0&&(SL>0||TrailingStopp_verwenden||BreakEven_verwenden))
+         {
+            double stoplev=MarketInfo(Symbol(),MODE_STOPLEVEL)*_Point;
+            for(Count = OrdersTotal()-1; Count>=0 ; Count--)
+               {
+                  if(OrderSelect(Count,SELECT_BY_POS))
+                     {
+                        if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+                           {
+                              if(OrderType()==OP_BUY ) 
+                                 {  
+                                    if(OrderStopLoss()==0&&SL>0)
+                                       {
+                                          double SLset = NormalizeDouble(OrderOpenPrice()-(UseSL*Point),Digits);      
+                                          if(SLset>0&&SLset<Bid-stoplev)
+                                             {
+                                                while(IsTradeContextBusy()) Sleep(10);
+                                                bool om=OrderModify(OrderTicket(),OrderOpenPrice(),SLset,OrderTakeProfit(),0,clrYellow);
+                                             }   
+                                       }
+                                    if(BreakEven_verwenden&&OrderSelect(Count,SELECT_BY_POS))
+                                       {
+                                          if(Bid>=OrderOpenPrice()+UseBEtrigger*Point)
+                                             {
+                                                double beSL=NormalizeDouble(OrderOpenPrice()+UseBEprofit*Point,Digits);
+                                                if(beSL>0&&(beSL>OrderStopLoss()||OrderStopLoss()==0)&&beSL<Bid-stoplev)
+                                                   {
+                                                      while(IsTradeContextBusy()) Sleep(10);
+                                                      om=OrderModify(OrderTicket(),OrderOpenPrice(),beSL,OrderTakeProfit(),0,clrYellowGreen);
+                                                   }
+                                                   
+                                                if(BreakEven_Teilverkauf>0&&BreakEven_Teilverkauf<=100)
+                                                if(OrderSelect(Count,SELECT_BY_POS))
+                                                if(StringFind(OrderComment(),"from #")<0)
+                                                if(BreakEven_Teilverkauf/100*OrderLots()>=MarketInfo(Symbol(),MODE_MINLOT))
+                                                   {
+                                                      double clsLots=NormalizeDouble(BreakEven_Teilverkauf/100*OrderLots(),LotsRundung);
+                                                      while(IsTradeContextBusy()) Sleep(10);
+                                                      bool oc=OrderClose(OrderTicket(),clsLots,OrderClosePrice(),UseSlippage,clrCornflowerBlue);
+                                                   }
+                                                
+                                                   
+                                             }
+                                       }
+                                    if(TrailingStopp_verwenden&&OrderSelect(Count,SELECT_BY_POS))
+                                       {
+                                          if(Bid>=OrderOpenPrice()+(UseAktivTS*Point))
+                                             if(Bid>OrderStopLoss()+(UseTS*Point))
+                                             {
+                                                double trailingSL=NormalizeDouble(Bid-(UseTS*Point),Digits);
+                                                if(trailingSL>0&&trailingSL<Bid-stoplev)
+                                                   {
+                                                      while(IsTradeContextBusy()) Sleep(10);
+                                                      om=OrderModify(OrderTicket(),OrderOpenPrice(),trailingSL,OrderTakeProfit(),0,clrOrange);
+                                                   }
+                                             }
+                                       }
+                                 }   
+                              else if(OrderType()==OP_SELL ) 
+                                 {
+                                    if(OrderStopLoss()==0&&SL>0)
+                                       {
+                                          SLset = NormalizeDouble(OrderOpenPrice()+(UseSL*Point),Digits);
+                                          if(SLset>0&&SLset>Ask+stoplev)
+                                             {
+                                                while(IsTradeContextBusy()) Sleep(10);
+                                                om=OrderModify(OrderTicket(),OrderOpenPrice(),SLset,OrderTakeProfit(),0,clrYellow);
+                                             } 
+                                       } 
+                                    if(BreakEven_verwenden&&OrderSelect(Count,SELECT_BY_POS))
+                                       {
+                                          if(Ask<=OrderOpenPrice()-UseBEtrigger*Point)
+                                             {
+                                                beSL=NormalizeDouble(OrderOpenPrice()-UseBEprofit*Point,Digits);
+                                                if(beSL>0&&(beSL<OrderStopLoss()||OrderStopLoss()==0)&&beSL>Ask+stoplev)
+                                                   {
+                                                      while(IsTradeContextBusy()) Sleep(10);
+                                                      om=OrderModify(OrderTicket(),OrderOpenPrice(),beSL,OrderTakeProfit(),0,clrYellowGreen);
+                                                   }
+                                                   
+                                                if(BreakEven_Teilverkauf>0&&BreakEven_Teilverkauf<=100)
+                                                if(OrderSelect(Count,SELECT_BY_POS))
+                                                if(StringFind(OrderComment(),"from #")<0)
+                                                if(BreakEven_Teilverkauf/100*OrderLots()>=MarketInfo(Symbol(),MODE_MINLOT))
+                                                   {
+                                                      clsLots=NormalizeDouble(BreakEven_Teilverkauf/100*OrderLots(),LotsRundung);
+                                                      while(IsTradeContextBusy()) Sleep(10);
+                                                      oc=OrderClose(OrderTicket(),clsLots,OrderClosePrice(),UseSlippage,clrCornflowerBlue);
+                                                   }
+                                                
+                                             }
+                                       }
+                                    if(TrailingStopp_verwenden&&OrderSelect(Count,SELECT_BY_POS))
+                                       {
+                                          if(Ask<=OrderOpenPrice()-(UseAktivTS*Point))
+                                             if(Ask<OrderStopLoss()-(UseTS*Point)||OrderStopLoss()==0)
+                                             {
+                                                trailingSL=NormalizeDouble(Ask+(UseTS*Point),Digits);
+                                                if(trailingSL>0&&trailingSL>Ask+stoplev)
+                                                   {
+                                                      while(IsTradeContextBusy()) Sleep(10);
+                                                      om=OrderModify(OrderTicket(),OrderOpenPrice(),trailingSL,OrderTakeProfit(),0,clrOrange);
+                                                   }
+                                             }
+                                       }
+                                 }      
+                           }   
+                     }
+               }
+         }
+      //TP
+      if(DealCount>0&&TP>0)
+         {
+            for(Count = OrdersTotal()-1; Count>=0 ; Count--)
+               {
+                  if(OrderSelect(Count,SELECT_BY_POS))
+                     {
+                        if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+                           {
+                              if(OrderType()==OP_BUY) 
+                                 {  
+                                    if(TP>0&&OrderTakeProfit()==0)
+                                       {
+                                          double TPset = NormalizeDouble(OrderOpenPrice()+(UseTP*Point),Digits);
+                                          if(TPset>0)
+                                             {
+                                                while(IsTradeContextBusy()) Sleep(10);
+                                                om=OrderModify(OrderTicket(),OrderOpenPrice(),OrderStopLoss(),TPset,0,clrYellow);
+                                             }
+                                       }
+                                 }   
+                              else if(OrderType()==OP_SELL ) 
+                                 {
+                                    if(TP>0&&OrderTakeProfit()==0)
+                                       {
+                                          TPset = NormalizeDouble(OrderOpenPrice()-(UseTP*Point),Digits);
+                                          if(TPset>0)
+                                             {
+                                                while(IsTradeContextBusy()) Sleep(10);
+                                                om=OrderModify(OrderTicket(),OrderOpenPrice(),OrderStopLoss(),TPset,0,clrYellow);
+                                             }
+                                       }
+                                 }      
+                           }   
+                     }
+               }
+         }
+      
+         
+      //Start-Funktion schließen
+      return(0);
+   }
+
+
+//Loop through current deal pool
+void DealCounter()
+   {
+      DealCount = 0; 
+      LongCount = 0; 
+      ShortCount = 0;
+      for(int Count = 0; Count<=OrdersTotal()-1 ; Count++)
+         {
+            if(OrderSelect(Count,SELECT_BY_POS,MODE_TRADES))
+               {
+                  if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+                     {
+                        if(OrderType()==OP_BUY)
+                           {
+                              LongCount++;
+                              DealCount++;
+                           }
+                        else if(OrderType()==OP_SELL)
+                           {
+                              ShortCount++;
+                              DealCount++;
+                           }   
+                     }
+               }   
+         }
+   }
+//---------
+bool AlertAusgegeben;
+void messageCentral(int LONG,int SHORT)
+   {
+      string Richtung="Short-Signal";
+      if(LONG)Richtung="Long-Signal";
+      if(!LONG&&!SHORT)return;
+      ChartSetInteger(0, CHART_BRING_TO_TOP, true);
+      string TimeRightNow = TimeToStr(TimeCurrent(),TIME_SECONDS|TIME_DATE);
+      string Subject = StringConcatenate(Symbol()," M",ChartPeriod(MA_Timeframe)," ",Richtung);
+      string Body = StringConcatenate(Subject,", Server-Zeit: ",TimeRightNow," @Bid=",Bid);
+      bool ps=PlaySound(AudioAlarm);
+      if(PopUpAlert) Alert(StringConcatenate(Subject," @Bid=",Bid));
+      if(Pushbenachrichtigung) SendNotification(StringConcatenate(TimeCurrent()," ",Subject," @Bid=",Bid));
+      if(EmailAlert)
+         {
+            bool sm=SendMail(Subject,Body);
+            if(!sm) Alert("Signal-E-Mail konnte nicht versendet werden");
+         }
+      if(PfeileZeichnen)
+         {
+            datetime pfeiltime=SignalInnerhalbKerzeHandeln?TimeCurrent():iTime(Symbol(),MA_Timeframe,0);
+            string pfeilname=StringConcatenate(LONG,SHORT,pfeiltime,"pfeil");
+            if(ObjectFind(pfeilname)<0)
+               {
+                  int pfeilrichtung=233;
+                  double pfeilpreis=Bid;
+                  color pfeilclr=FarbeLongsignal;
+                  ENUM_ARROW_ANCHOR pfeilanchor=ANCHOR_TOP;
+                  if(SHORT) 
+                     {
+                        pfeilrichtung=234;
+                        pfeilclr=FarbeShortsignal;
+                        pfeilanchor=ANCHOR_BOTTOM;
+                     }
+                  if(!ObjectCreate(pfeilname,OBJ_ARROW,0,pfeiltime,pfeilpreis))
+                     {
+                        Print("Signal-Pfeil konnte nicht gezeichnet werden");
+                     }
+                  ObjectSetInteger(0,pfeilname,OBJPROP_COLOR,pfeilclr); 
+                  ObjectSetInteger(0,pfeilname,OBJPROP_WIDTH,PfeilBreite);
+                  ObjectSetInteger(0,pfeilname,OBJPROP_ARROWCODE,pfeilrichtung);
+                  ObjectSetInteger(0,pfeilname,OBJPROP_ANCHOR,pfeilanchor);
+               }
+         }
+      AlertAusgegeben=true;
+   }
